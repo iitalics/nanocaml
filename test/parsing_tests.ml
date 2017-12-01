@@ -335,6 +335,28 @@ let tt =
 
       "pass_of_value_binding(2)" >::
         begin fun _ ->
+        match stri_value_binding
+                [%stri let[@pass Test_L0 => Test_L0] remove_a =
+                   let tmp = 0 in
+                   [%passes
+                     let[@entry] rec a = function
+                       | `A _ -> `A0 ] ]
+              |> pass_of_value_binding
+        with
+        | {npp_name = "remove_a";
+           npp_input = li;
+           npp_output = lo;
+           npp_pre = pre;
+           npp_post = {pexp_desc = Pexp_ident {txt = Lident "a"}};
+           npp_procs = [ a_proc ]}
+          ->
+           ()
+
+        | _ -> assert_failure "pass has wrong structure"
+        end;
+
+      "pass_of_value_binding(3)" >::
+        begin fun _ ->
         try
           stri_value_binding
             [%stri let[@pass Test_L0 => L1] foo =
@@ -346,7 +368,7 @@ let tt =
         with Location.Error _ -> ()
         end;
 
-      "pass_of_value_binding(3)" >::
+      "pass_of_value_binding(4)" >::
         begin fun _ ->
         try
           stri_value_binding
@@ -360,7 +382,7 @@ let tt =
         with Location.Error _ -> ()
         end;
 
-      "pass_of_value_binding(4)" >::
+      "pass_of_value_binding(5)" >::
         begin fun _ ->
         try
           stri_value_binding
@@ -371,7 +393,7 @@ let tt =
         with Location.Error _ -> ()
         end;
 
-      "pass_of_value_binding(5)" >::
+      "pass_of_value_binding(6)" >::
         begin fun _ ->
         try
           stri_value_binding
