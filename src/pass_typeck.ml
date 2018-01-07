@@ -3,6 +3,17 @@ open Ast
 open Pass
 open Lang
 
+let _current_pass = ref None
+let current_pass () = Option.get !_current_pass
+
+let with_current_pass (ps : np_pass) f =
+  let old = !_current_pass in
+  _current_pass := Some ps;
+  let res = f () in
+  _current_pass := old;
+  res
+
+
 (** perform "typechecking" on the clauses in each processor of the pass.
     this checks the patterns against the production signatures, to make sure that
     they are well formed. additionally, it elaborates patterns in the following
@@ -41,16 +52,21 @@ open Lang
 let rec typeck_pass
     ({npp_input = lang;
       npp_procs = procs} as pass) =
-  let check_pattern nt_name = function
-    | (NPpat_variant (name, _, _) as pat, expr) ->
-      let ty = NP_nonterm nt_name in
-      (typeck_pat ~pass ty pat, expr)
-    | (pat, expr) -> (pat, expr) in
-  let make_exhaustive {npc_dom; npc_clauses = clauses; npc_loc = loc} =
-    let missing_prods = cross_off npc_dom.npnt_productions clauses in
-    let missing_clauses = gen_missing ~pass ~loc missing_prods in
-    List.map (check_pattern npc_dom.npnt_name) (clauses @ missing_clauses) in
-  { pass with npp_procs = List.map (fun proc -> { proc with npc_clauses = make_exhaustive proc }) procs }
+  with_current_pass pass
+    (fun () ->
+      let check_pattern nt_name = function
+        | (NPpat_variant (name, _, _) as pat, expr) ->
+           let ty = NP_nonterm nt_name in
+           (typeck_pat ty pat, expr)
+        | (pat, expr) -> (pat, expr)
+      in
+      let make_exhaustive {npc_dom; npc_clauses = clauses; npc_loc = loc} =
+        let missing_prods = cross_off npc_dom.npnt_productions clauses in
+        let missing_clauses = gen_missing ~loc missing_prods in
+        List.map (check_pattern npc_dom.npnt_name) (clauses @ missing_clauses)
+      in
+      let procs' = List.map (fun proc -> { proc with npc_clauses = make_exhaustive proc }) procs in
+      { pass with npp_procs = procs' })
 
 (** returns an [exn] for type errors. **)
 (* TODO: better error messages *)
@@ -69,7 +85,7 @@ and cross_off prods = function
     cross_off (remove variant_name prods) clauses
   | _::clauses -> cross_off prods clauses
 
-and gen_missing ~pass ~loc prods =
+and gen_missing ~loc prods =
   let fresh =
     let num = ref 0 in
     fun () ->
@@ -83,18 +99,18 @@ and gen_missing ~pass ~loc prods =
         (NPpat_var {txt = name; loc}, {pexp_desc = desc; pexp_loc = loc; pexp_attributes = []})
       | NP_nonterm nt_name ->
         let name = fresh () in
-        (typeck_pat ~pass (NP_nonterm nt_name) (NPpat_cata (NPpat_var {txt = name; loc}, None)),
+        (typeck_pat (NP_nonterm nt_name) (NPpat_cata (NPpat_var {txt = name; loc}, None)),
          {pexp_desc = Pexp_ident {txt = Lident name; loc}; pexp_loc = loc; pexp_attributes = []})
       | NP_tuple tys ->
         let (pats, exprs) = tys |> List.map arg_clause |> List.split in
         (NPpat_tuple (pats, loc), {pexp_desc = Pexp_tuple exprs; pexp_loc = loc; pexp_attributes = []})
       | NP_list (NP_tuple tys) ->
         let (pats, exprs) = tys |> List.map arg_clause |> List.split in
-        (typeck_pat ~pass (NP_list (NP_tuple tys)) (NPpat_map (NPpat_tuple (pats, loc))),
+        (typeck_pat (NP_list (NP_tuple tys)) (NPpat_map (NPpat_tuple (pats, loc))),
         {pexp_desc = Pexp_tuple exprs; pexp_loc = loc; pexp_attributes = [{txt="l"; loc}, PStr []]})
       | NP_list ty ->
         let (pat, expr) = arg_clause ty in
-        (typeck_pat ~pass (NP_list ty) (NPpat_map pat),
+        (typeck_pat (NP_list ty) (NPpat_map pat),
          {expr with pexp_attributes = [{txt="l"; loc}, PStr []]})
     in
     let construct e =
@@ -110,12 +126,12 @@ and gen_missing ~pass ~loc prods =
     succeeds, returns a pattern that is the same as the given pattern,
     with all empty [@r] patterns filled in with an inferred catamorphism
     function. **)
-and typeck_pat ~pass typ pat =
+and typeck_pat typ pat =
   match pat with
   | NPpat_any _ | NPpat_var _ -> pat
 
   | NPpat_alias (sub_pat, name) ->
-     NPpat_alias (typeck_pat ~pass typ sub_pat, name)
+     NPpat_alias (typeck_pat typ sub_pat, name)
 
   | NPpat_tuple (sub_pats, loc) ->
      begin match typ with
@@ -127,7 +143,7 @@ and typeck_pat ~pass typ pat =
             (List.length sub_pats)
         else
           let sub_pats' =
-            List.map2 (typeck_pat ~pass)
+            List.map2 typeck_pat
               sub_typs
               sub_pats
           in
@@ -139,30 +155,30 @@ and typeck_pat ~pass typ pat =
      begin match typ with
      | NP_term _ -> pat
      | NP_nonterm nt_name ->
-        let arg' = typeck_nonterm ~pass ~loc nt_name name arg in
+        let arg' = typeck_nonterm ~loc nt_name name arg in
         NPpat_variant (name, arg', loc)
      | _ -> raise (typeck_err ~loc typ)
      end
 
   | NPpat_map elem_pat ->
      begin match typ with
-     | NP_list elem_typ -> NPpat_map (typeck_pat ~pass elem_typ elem_pat)
+     | NP_list elem_typ -> NPpat_map (typeck_pat elem_typ elem_pat)
      | _ -> raise (typeck_err ~loc:(loc_of_pat elem_pat) typ)
      end
 
   | NPpat_cata (pat, opt_cata) ->
-     begin match typeck_cata ~pass ~loc:(loc_of_pat pat) opt_cata typ pat with
+     begin match typeck_cata ~loc:(loc_of_pat pat) opt_cata typ pat with
      | `Infer cata ->
         NPpat_cata (pat, Some cata)
      | `Rewrite pat' ->
-        typeck_pat ~pass typ pat'
+        typeck_pat typ pat'
      end
 
 (** typecheck the (optional) argument to a nontermal given [pr_name],
     the name of the production it is associated with. [nt_name] must
     be a valid nonterminal in the input language. *)
-and typeck_nonterm ~pass ~loc nt_name pr_name arg =
-  let lang = pass.npp_input in
+and typeck_nonterm ~loc nt_name pr_name arg =
+  let lang = (current_pass ()).npp_input in
   let nonterm = language_nonterm lang nt_name in
   let arg_typ =
     try
@@ -181,13 +197,13 @@ and typeck_nonterm ~pass ~loc nt_name pr_name arg =
   | None, Some pat -> Location.raise_errorf ~loc
                         "unexpected argument to production %S" pr_name
   | None, None -> None
-  | Some typ, Some pat -> Some (typeck_pat ~pass typ pat)
+  | Some typ, Some pat -> Some (typeck_pat typ pat)
 
 
 (** typechecks a catamorphism pattern, which either infers
     the catamorphism, or rewrites the pattern by moving the
     catamorphism to deeper sub-patterns. **)
-and typeck_cata ~pass ~loc opt_cata typ inner_pat =
+and typeck_cata ~loc opt_cata typ inner_pat =
   (* wraps given pattern with 'as x' if [inner_pat] is a variable *)
   let wrap_pattern pat = match inner_pat with
     | NPpat_any _ -> pat
@@ -200,10 +216,11 @@ and typeck_cata ~pass ~loc opt_cata typ inner_pat =
        Location.raise_errorf ~loc
          "catamorphism binding must always succeed"
      else
+       let lang = (current_pass ()).npp_input in
        let cata =
          Option.default_delayed (fun () ->
-             catamorphism ~pass ~loc
-               (language_nonterm pass.npp_input nt_name))
+             catamorphism ~loc
+               (language_nonterm lang nt_name))
            opt_cata
        in
        `Infer cata
@@ -239,11 +256,12 @@ and pat_is_conditional = function
 (** generate an appropriate catamorphism function expression for the
     given nonterminal. **)
 (* TODO: create a more sophisticated algorithm for choosing catamorphisms *)
-and catamorphism ~pass ~loc nonterm =
+and catamorphism ~loc nonterm =
+  let procs = (current_pass ()).npp_procs in
   match List.filter (fun proc ->
             proc.npc_dom == nonterm
             && List.is_empty proc.npc_args)
-          pass.npp_procs
+          procs
   with
   | [] ->
      (* TODO: autogenerate processors? *)

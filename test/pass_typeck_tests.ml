@@ -29,6 +29,16 @@ let tt =
     let any = NPpat_any loc in
     let var_x = NPpat_var {txt = "x"; loc} in
 
+    let typeck_pat t p =
+      TC.with_current_pass pass1
+        (fun () -> TC.typeck_pat t p) in
+    let typeck_nt ~loc nt_name pr_name opt_pat =
+      TC.with_current_pass pass1
+        (fun () -> TC.typeck_nonterm ~loc nt_name pr_name opt_pat) in
+    let typeck_cata ~loc opt_expr typ =
+      TC.with_current_pass pass1
+        (fun () -> TC.typeck_cata ~loc opt_expr typ) in
+
     [
 
       "catamorphism(1)" >::
@@ -41,9 +51,11 @@ let tt =
                in 0 ]
           |> pass_of_value_binding
         in
-        match TC.catamorphism ~loc ~pass test_L0_a with
-        | {pexp_desc = Pexp_ident {txt = Lident "a"}} -> ()
-        | _ -> assert_failure "cata of 'a' has wrong form"
+        TC.with_current_pass pass
+          (fun () ->
+            match TC.catamorphism ~loc test_L0_a with
+            | {pexp_desc = Pexp_ident {txt = Lident "a"}} -> ()
+            | _ -> assert_failure "cata of 'a' has wrong form")
         end;
 
       "catamorphism(2)" >::
@@ -57,35 +69,35 @@ let tt =
           |> pass_of_value_binding;
         in
         try
-          TC.catamorphism ~loc ~pass test_L0_a
-          |> ignore;
+          TC.with_current_pass pass
+            (fun () -> TC.catamorphism ~loc test_L0_a |> ignore);
           assert_failure "expected cata for 'a' to fail (not defined)"
         with Location.Error _ -> ()
         end;
 
       "typeck_pat(1)" >::
         begin fun _ ->
-        assert_equal any (TC.typeck_pat ~pass:pass1 (NP_nonterm "a") any);
-        assert_equal var_x (TC.typeck_pat ~pass:pass1 (NP_nonterm "b") var_x);
+        assert_equal any (typeck_pat (NP_nonterm "a") any);
+        assert_equal var_x (typeck_pat (NP_nonterm "b") var_x);
         end;
 
       "typeck_pat(2)" >::
         begin fun _ ->
         let pat = NPpat_variant ("A", Some any, loc) in
-        assert_equal pat (TC.typeck_pat ~pass:pass1 (NP_nonterm "a") pat);
+        assert_equal pat (typeck_pat (NP_nonterm "a") pat);
         end;
 
       "typeck_pat(3)" >::
         begin fun _ ->
         let pat = NPpat_alias (var_x, {txt = "y"; loc}) in
-        assert_equal pat (TC.typeck_pat ~pass:pass1 (NP_nonterm "a") pat);
-        assert_equal pat (TC.typeck_pat ~pass:pass1 (NP_term [%type: int]) pat);
+        assert_equal pat (typeck_pat (NP_nonterm "a") pat);
+        assert_equal pat (typeck_pat (NP_term [%type: int]) pat);
         end;
 
       "typeck_pat(4)" >::
         begin fun _ ->
         let pat = NPpat_tuple ([ any; any ], loc) in
-        assert_equal pat (TC.typeck_pat ~pass:pass1
+        assert_equal pat (typeck_pat
                             (NP_tuple [ NP_term [%type: int]; NP_nonterm "a" ])
                             pat);
         end;
@@ -93,7 +105,7 @@ let tt =
       "typeck_pat(5)" >::
         begin fun _ ->
         try
-          TC.typeck_pat ~pass:pass1
+          typeck_pat
             (NP_tuple [ NP_term [%type: int];
                         NP_nonterm "a" ])
             (NPpat_tuple ([ any; any; any ], loc))
@@ -106,7 +118,7 @@ let tt =
 
       "typeck_pat(6)" >::
         begin fun _ ->
-        match (TC.typeck_pat ~pass:pass1
+        match (typeck_pat
                  (NP_nonterm "a")
                  (NPpat_cata (var_x, None))) with
         (* x [@r] ==> x [@r a] *)
@@ -119,7 +131,7 @@ let tt =
 
       "typeck_pat(7)" >::
         begin fun _ ->
-        match (TC.typeck_pat ~pass:pass1
+        match (typeck_pat
                  (NP_list (NP_tuple [ NP_nonterm "a";
                                       NP_term [%type: int] ]))
                  (NPpat_cata (var_x, None))) with
@@ -134,14 +146,14 @@ let tt =
 
       "typeck_nonterm(1)" >::
         begin fun _ ->
-        assert_equal None (TC.typeck_nonterm ~pass:pass1 ~loc "a" "A0" None);
-        assert_equal (Some var_x) (TC.typeck_nonterm ~pass:pass1 ~loc "a" "A" (Some var_x));
+        assert_equal None (typeck_nt ~loc "a" "A0" None);
+        assert_equal (Some var_x) (typeck_nt ~loc "a" "A" (Some var_x));
         end;
 
       "typeck_nonterm(2)" >::
         begin fun _ ->
         try
-          TC.typeck_nonterm ~pass:pass1 ~loc "a" "A0" (Some any)
+          typeck_nt ~loc "a" "A0" (Some any)
           |> ignore; assert_failure "expected typeck to fail (nonterm doesn't expect arguments)"
         with Location.Error e ->
           assert_equal "unexpected" (String.sub e.msg 0 10)
@@ -151,7 +163,7 @@ let tt =
       "typeck_nonterm(3)" >::
         begin fun _ ->
         try
-          TC.typeck_nonterm ~pass:pass1 ~loc "a" "A" None
+          typeck_nt ~loc "a" "A" None
           |> ignore; assert_failure "expected typeck to fail (nonterm expects arguments)"
         with Location.Error e ->
           assert_equal "expected" (String.sub e.msg 0 8)
@@ -162,16 +174,16 @@ let tt =
         begin fun _ ->
         let cata = [%expr fn a b c] in
         assert_equal (`Infer cata)
-          (TC.typeck_cata ~pass:pass1 ~loc (Some cata) (NP_nonterm "a") any);
+          (typeck_cata ~loc (Some cata) (NP_nonterm "a") any);
         assert_equal (`Infer (Exp.ident ~loc {txt = Lident "a"; loc}))
-          (TC.typeck_cata ~pass:pass1 ~loc None (NP_nonterm "a") any);
+          (typeck_cata ~loc None (NP_nonterm "a") any);
         assert_equal (`Rewrite any)
-          (TC.typeck_cata ~pass:pass1 ~loc None (NP_term [%type: int]) any);
+          (typeck_cata ~loc None (NP_term [%type: int]) any);
         end;
 
       "typeck_cata(2)" >::
         begin fun _ ->
-        match TC.typeck_cata ~pass:pass1 ~loc None
+        match typeck_cata ~loc None
                 (NP_tuple [ NP_term [%type: int]; NP_nonterm "a" ])
                 any
         with
@@ -182,7 +194,7 @@ let tt =
 
       "typeck_cata(3)" >::
         begin fun _ ->
-        match TC.typeck_cata ~pass:pass1 ~loc None
+        match typeck_cata ~loc None
                 (NP_tuple [ NP_term [%type: int]; NP_nonterm "a" ])
                 var_x
         with
@@ -196,7 +208,7 @@ let tt =
       "typeck_cata(4)" >::
         begin fun _ ->
         let cata = [%expr fn a b c] in
-        match TC.typeck_cata ~pass:pass1 ~loc (Some cata)
+        match typeck_cata ~loc (Some cata)
                 (NP_list (NP_nonterm "a"))
                 any
         with
@@ -207,7 +219,7 @@ let tt =
       "typeck_cata(5)" >::
         begin fun _ ->
         try
-          TC.typeck_cata ~pass:pass1 ~loc None
+          typeck_cata ~loc None
             (NP_nonterm "a")
             (NPpat_variant ("A", None, loc))
           |> ignore;
